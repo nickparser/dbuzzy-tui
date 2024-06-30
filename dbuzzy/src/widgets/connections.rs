@@ -1,7 +1,7 @@
 use duzzy_lib::{
     colors,
     event::{Event, Input},
-    DrawableStateful, EventOutcome, OnInput,
+    DuzzyWidget, EventOutcome,
 };
 use ratatui::{
     buffer::Buffer,
@@ -11,15 +11,16 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, StatefulWidget, Widget},
 };
 
-use crate::db::connection::ConnectionConfig;
+use crate::db::connection::{ConnectionConfig, PgPool};
 
-pub struct Connections<'a> {
-    items: &'a [ConnectionConfig],
+pub struct Connections {
     state: ListState,
+    configs: &'static [ConnectionConfig],
+    pool: Option<PgPool>,
 }
 
-impl<'a> Connections<'a> {
-    pub fn new(conns: &'a [ConnectionConfig]) -> Self {
+impl Connections {
+    pub fn new(conns: &'static [ConnectionConfig]) -> Self {
         let mut state = ListState::default();
 
         if !conns.is_empty() {
@@ -27,38 +28,76 @@ impl<'a> Connections<'a> {
         }
 
         Self {
-            items: conns,
+            configs: conns,
             state,
+            pool: None,
         }
     }
 
-    pub fn next_conn(&mut self) {
-        let i = self
-            .state
-            .selected()
-            .map(|i| if i >= self.items.len() - 1 { 0 } else { i + 1 });
+    pub fn next_connection(&mut self) {
+        let i = self.state.selected().map(|i| {
+            if i >= self.configs.len() - 1 {
+                0
+            } else {
+                i + 1
+            }
+        });
 
         self.state.select(i);
     }
 
-    pub fn prev_conn(&mut self) {
-        let i = self
-            .state
-            .selected()
-            .map(|i| if i == 0 { self.items.len() - 1 } else { i - 1 });
+    pub fn prev_connection(&mut self) {
+        let i = self.state.selected().map(|i| {
+            if i == 0 {
+                self.configs.len() - 1
+            } else {
+                i - 1
+            }
+        });
 
         self.state.select(i);
+    }
+
+    pub fn select_connection(&mut self) {
+        let Some(config) = self.state.selected().and_then(|i| self.configs.get(i)) else {
+            return;
+        };
+
+        self.pool = match PgPool::create(config) {
+            Ok(pool) => Some(pool),
+            Err(_e) => {
+                // @todo: call error widget?
+                // and better logs
+                return;
+            }
+        };
     }
 
     // @todo:
     #[allow(dead_code)]
-    pub fn selected_conn(&self) -> Option<&ConnectionConfig> {
-        self.state.selected().and_then(|i| self.items.get(i))
+    pub const fn pool(&self) -> Option<&PgPool> {
+        self.pool.as_ref()
     }
 }
 
-impl DrawableStateful for Connections<'_> {
-    fn draw(&mut self, area: Rect, buf: &mut Buffer) {
+impl DuzzyWidget for Connections {
+    type Outcome = super::AppEventOutcome;
+
+    fn input(&mut self, input: Input) -> Self::Outcome {
+        let mut outcome = EventOutcome::Render;
+
+        match input.event {
+            Event::Char('q') | Event::Esc => outcome = EventOutcome::Exit,
+            Event::Char('j') | Event::Down => self.next_connection(),
+            Event::Char('k') | Event::Up => self.prev_connection(),
+            Event::Char('l') | Event::Right | Event::Enter => self.select_connection(),
+            _ => outcome = EventOutcome::Ignore,
+        }
+
+        outcome.into()
+    }
+
+    fn render(&mut self, area: Rect, buf: &mut Buffer) {
         let vertical = Layout::vertical([Constraint::Min(0), Constraint::Length(2)]);
 
         let [conn_area, info_area] = vertical.areas(area);
@@ -68,7 +107,7 @@ impl DrawableStateful for Connections<'_> {
             .render(info_area, buf);
 
         let items = self
-            .items
+            .configs
             .iter()
             .map(|conn| {
                 ListItem::new(Line::styled(
@@ -89,21 +128,5 @@ impl DrawableStateful for Connections<'_> {
             .highlight_style(Style::default().bg(colors::ALOE_GREEN));
 
         StatefulWidget::render(connections, conn_area, buf, &mut self.state);
-    }
-}
-
-impl OnInput for Connections<'_> {
-    fn on_input(&mut self, input: Input) -> EventOutcome {
-        let mut outcome = EventOutcome::Render;
-
-        match input.event {
-            Event::Char('q') | Event::Esc => outcome = EventOutcome::Exit,
-            Event::Char('j') | Event::Down => self.next_conn(),
-            Event::Char('k') | Event::Up => self.prev_conn(),
-            Event::Char('l') | Event::Right | Event::Enter => todo!(),
-            _ => outcome = EventOutcome::Ignore,
-        }
-
-        outcome
     }
 }

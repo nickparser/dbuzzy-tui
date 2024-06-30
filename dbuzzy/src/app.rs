@@ -1,20 +1,36 @@
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
 use crossterm::event::{Event, EventStream};
-use duzzy_lib::{DrawableStateful, EventOutcome, OnInput};
+use duzzy_editor::Editor;
+use duzzy_lib::{DuzzyWidget, EventOutcome};
 use futures_util::StreamExt;
 use ratatui::{backend::Backend, buffer::Buffer, layout::Rect, widgets::Widget, Terminal};
 
-use crate::{config::Config, widgets::Connections};
+use crate::{
+    config::Config,
+    widgets::{AppEventOutcome, AppWidget, Connections},
+};
 
-pub struct App<'a> {
-    connections: Connections<'a>,
+pub struct App {
+    focus: AppWidget,
+    editor: Box<Editor>,
+    widgets: HashMap<AppWidget, Box<dyn DuzzyWidget<Outcome = AppEventOutcome>>>,
 }
 
-impl<'a> App<'a> {
-    pub fn new(config: &'a Config) -> Self {
+impl App {
+    pub fn new(config: &'static Config) -> Self {
+        let mut widgets: HashMap<AppWidget, Box<dyn DuzzyWidget<Outcome = AppEventOutcome>>> =
+            HashMap::new();
+
+        widgets.insert(
+            AppWidget::Connections,
+            Box::new(Connections::new(config.conn.as_slice())),
+        );
+
         Self {
-            connections: Connections::new(config.conn.as_slice()),
+            widgets,
+            editor: Box::new(Editor::new_scratch()),
+            focus: AppWidget::Connections,
         }
     }
 
@@ -30,9 +46,12 @@ impl<'a> App<'a> {
             };
 
             match self.handle_event(event) {
-                EventOutcome::Render => self.draw(terminal)?,
-                EventOutcome::Exit => return Ok(()),
-                EventOutcome::Ignore => continue,
+                AppEventOutcome::Outcome(event) => match event {
+                    EventOutcome::Render => self.draw(terminal)?,
+                    EventOutcome::Ignore => continue,
+                    EventOutcome::Exit => return Ok(()),
+                },
+                AppEventOutcome::Focus(focus) => self.focus = focus,
             }
         }
     }
@@ -42,17 +61,27 @@ impl<'a> App<'a> {
         Ok(())
     }
 
-    fn handle_event(&mut self, event: Event) -> EventOutcome {
+    fn handle_event(&mut self, event: Event) -> AppEventOutcome {
         let input = event.into();
-        self.connections.on_input(input)
+
+        if self.focus == AppWidget::Editor {
+            return self.editor.input(input).into();
+        }
+
+        self.widgets().input(input)
+    }
+
+    fn widgets(&mut self) -> &mut Box<dyn DuzzyWidget<Outcome = AppEventOutcome>> {
+        self.widgets.get_mut(&self.focus).expect("should focus")
     }
 }
 
-impl Widget for &mut App<'_> {
+impl Widget for &mut App {
     fn render(self, area: Rect, buf: &mut Buffer)
     where
         Self: Sized,
     {
-        self.connections.draw(area, buf);
+        // @note: draw widgets based on currently focused one
+        self.widgets().render(area, buf);
     }
 }
